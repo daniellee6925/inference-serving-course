@@ -68,8 +68,9 @@ It does not assume you have written a CUDA kernel. It does assume you will run t
 
 ## The shape of the rest of the course
 
-Twenty-one more chapters, building from the smallest mechanism up to the largest concern.
+Twenty-one more chapters, building from the smallest mechanism up to the largest concern — with one optional primer in front of them.
 
+- **Ch.0.5** — *the hardware underneath* (optional primer): the memory hierarchy — SRAM, HBM, NVLink, PCIe, NVMe — that every later trade-off plays on. Read it if that vocabulary isn't second nature; skip it if it is.
 - **Ch.01–04** — the mechanism: one forward pass → the decode loop → tokenization as the input contract → the KV cache.
 - **Ch.05–08** — throughput: batching → paged KV memory → attention kernels → speculative decoding.
 - **Ch.09–10** — fitting the model: quantization → multi-GPU serving (tensor/pipeline/expert parallelism).
@@ -101,4 +102,4 @@ You do not need permission to start, and you do not need a cluster. The first th
 
 The people running the cheapest, fastest inference today are not the ones who memorized the most flags. They are the ones who understood the mechanism first and measured everything after. This course exists so that when you are staring at a latency graph, you know what to ask.
 
-Turn the page. Ch.01 is one forward pass.
+Turn the page — to the Ch.0.5 hardware primer if the memory-hierarchy vocabulary (HBM, SRAM, NVLink, PCIe) is new to you, or straight to Ch.01, one forward pass, if it isn't.
