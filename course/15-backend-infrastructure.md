@@ -69,7 +69,7 @@ A naive router spreads requests round-robin — which *defeats* prefix caching (
 
 ### Multi-tenancy
 
-Shared infrastructure serving many users (or many models) needs **isolation and fairness**. The scheduler (Ch.11) is where fairness lives — per-tenant priorities and quotas so one heavy user can't starve the others. Model multiplexing matters too: serving multiple models, or many **LoRA adapters** over one base model, on shared GPUs to raise utilization. And isolation is a safety boundary (Ch.18): one tenant's requests, prompts, and KV must never leak into another's. Multi-tenancy is where the scheduler's policy levers meet business and security requirements.
+Shared infrastructure serving many users (or many models) needs **isolation and fairness**. The scheduler (Ch.11) is where fairness lives — per-tenant priorities and quotas so one heavy user can't starve the others (and, principled but not yet in the engines, token-based fair queueing / VTC — see Ch.11's Policy section, since a "fair share" of *tokens* is the honest unit, not requests). Model multiplexing matters too: serving multiple models, or many **LoRA adapters** over one base model, on shared GPUs to raise utilization. And isolation is a safety boundary (Ch.18): one tenant's requests, prompts, and KV must never leak into another's. Multi-tenancy is where the scheduler's policy levers meet business and security requirements.
 
 ### Queueing and backpressure
 

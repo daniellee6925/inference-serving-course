@@ -82,9 +82,17 @@ Prefill and decode fight for the same step. A single 8k-token prefill would cons
 
 Chunked prefill *interleaves* the two regimes; disaggregation *separates* them. Recall the asymmetry: prefill is compute-bound and bursty (one big pass), decode is memory-bound and steady (many small passes). Running them on the same GPU means a prefill spike always disturbs decode latency, no matter how you chunk. **Prefill/decode disaggregation** runs prefill on one pool of workers and decode on another, transferring the KV cache from the prefill worker to the decode worker when the prompt is done. Each pool is tuned for its regime (prefill workers for throughput, decode workers for latency), and neither interferes with the other. The cost is a **KV transfer** across the interconnect between phases. Both engines support it — vLLM through a KV-connector (`distributed/kv_transfer/`), SGLang through a dedicated `disaggregation/` subsystem (`prefill.py` / `decode.py`) — and it is the dominant pattern in large-scale, latency-sensitive deployments.
 
+### The KV-transfer tax and the KV-store view (Mooncake)
+
+Disaggregation isn't free: the KV you ship between pools *is* Ch.04's formula, so a long prompt moves gigabytes per request across the interconnect. Engines fight that tax three ways — **layer-wise streaming** (send each layer's KV the moment prefill finishes it, overlapping transfer with the rest of the prefill), **lower-precision transit** (fp8 KV over the wire), and **coalescing shared prefixes** (transfer a shared system prompt's KV once, not once per request — Ch.12's idea applied to the wire).
+
+Push it further and the KV cache stops being a per-request buffer and becomes a first-class, fleet-wide, *tiered* object: hot KV in decode-GPU HBM, warm in CPU DRAM, cold on NVMe (Ch.0.5's ladder; Ch.14/21's offload). A **KV-centric scheduler** then routes each request to whichever worker already holds — or can most cheaply fetch — its KV, and (in the Mooncake design) does **predictive early rejection**: declining a request at admission when the queue makes its SLO unreachable, rather than admitting it and missing (goodput over throughput, Ch.16). SGLang ships the pieces — a Mooncake KV connector and a decode-side offload manager (`disaggregation/mooncake/`, `disaggregation/decode_kvcache_offload_manager.py`).
+
 ### Policy: priorities, SLOs, and fairness
 
 Above the mechanics sits policy. The scheduler is where you express: **priority** (a paid tier preempts a free one), **SLO-awareness** (favor requests near their deadline), and **fairness** (no single tenant starves the others — critical for the multi-tenant systems of Ch.15). These are the same admission/preemption levers pointed at business goals: which requests to admit when the pool is scarce, and which to evict under pressure. The scheduler is the one place in the stack where "how the service should behave" becomes code.
+
+One subtlety makes LLM fairness different from web-server fairness: requests vary enormously in cost, so fair-queueing by *request count* is unfair — a tenant sending 100k-token prompts starves tenants sending short ones for the same "one request each." The principled fix is **token-based fair queueing** (the Virtual Token Counter, VTC): track each tenant's *consumed tokens* and serve whoever is furthest below their fair share, which bounds how much any one tenant can monopolize. VTC is research, not in the pinned engines — they ship priority tiers (and per-adapter/concurrency limits) — but it's the right mental model for what "fairness" should optimize here: tokens served, not requests admitted.
 
 ### Two engines, one control plane
 
@@ -95,7 +103,7 @@ Verified in both. **Agreement (load-bearing):** both run a per-step scheduler th
 ## Real-system notes
 
 - **vLLM** — `vllm/v1/core/sched/scheduler.py` @ `ae098ab`: `Scheduler.schedule` with a `token_budget`, running-first then waiting admission (L636), a `SchedulingPolicy` enum (FCFS / PRIORITY) driving preemption (L546–574), and chunked prefill via a long-prefill threshold. Disaggregation lives in `vllm/distributed/kv_transfer/` (a pluggable KV-connector in `kv_connector/`, plus a documented disaggregated-prefill workflow).
-- **SGLang** — `python/sglang/srt/managers/scheduler.py` @ `52c6e27` (`get_next_batch_to_run`, `running_batch`) plus a full `disaggregation/` subsystem (`prefill.py`, `decode.py`, `decode_kvcache_offload_manager.py`) — reflecting how central disaggregation and KV offload have become at scale.
+- **SGLang** — `python/sglang/srt/managers/scheduler.py` @ `52c6e27` (`get_next_batch_to_run`, `running_batch`) plus a full `disaggregation/` subsystem (`prefill.py`, `decode.py`, `decode_kvcache_offload_manager.py`, and a `mooncake/` KV connector) — reflecting how central disaggregation and tiered KV offload have become at scale.
 - **Orca** (2022) and the **Sarathi / chunked-prefill** and **DistServe / Splitwise** (2023–24) lines are the external references for iteration-level scheduling, chunked prefill, and prefill/decode disaggregation respectively — worth reading for *why* each pattern exists.
 
 ---
@@ -119,6 +127,7 @@ Verified in both. **Agreement (load-bearing):** both run a per-step scheduler th
 - *"Turn chunked prefill on and off with a long-prompt workload mixed with short decodes. Measure the TPOT spike without it and the smoothing with it."*
 - *"Explain prefill/decode disaggregation: why the two regimes interfere, what the KV transfer costs, and when disaggregation beats chunked prefill. Point me at `references/vllm/vllm/distributed/kv_transfer/` and `references/sglang/.../disaggregation/`."*
 - *"Simulate recompute vs. swap preemption for a 200-token and a 8k-token prompt on my interconnect, and tell me which wins for each and why."*
+- *"Estimate the KV-transfer tax of prefill/decode disaggregation for my prompt lengths (Ch.04 bytes/token × prompt tokens ÷ interconnect bandwidth), and tell me at what prompt length the transfer cost cancels the disaggregation win."*
 
 ---
 

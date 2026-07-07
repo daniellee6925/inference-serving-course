@@ -77,6 +77,13 @@ The two regimes from Ch.01 need different attention shapes, which is why engines
 
 An engine that used the prefill kernel for decode (or vice versa) would leave a lot of performance on the table; the split mirrors the prefill/decode asymmetry you've now seen at every layer of the stack.
 
+### FlashDecoding and FlashInfer: kernels shaped for serving
+
+Two evolutions of FlashAttention matter specifically for *serving*:
+
+- **FlashDecoding — parallelize the KV scan.** Long-context decode is the opposite of prefill: *one* query token attending over a huge KV cache. That single query gives the GPU almost nothing to spread across its SMs — a few grind through the whole KV while the rest sit idle. FlashDecoding splits the *KV* dimension instead: many SMs each scan a chunk of the KV in parallel, produce a partial softmax, and combine with the same log-sum-exp identity online softmax already uses. vLLM exposes this as `max_num_splits` in its FlashAttention backend (`flash_attn.py` L251/L399); it's set carefully because each split allocates an intermediate buffer of size `[num_splits, …]`, so more parallelism costs memory (L476–479).
+- **FlashInfer — a kernel *engine*, not a kernel.** FlashInfer is a library built for exactly the serving patterns of this course: **paged** attention (Ch.06 block tables — `BatchDecodeWithPagedKVCacheWrapper`), **ragged** variable-length batches (`BatchPrefillWithRaggedKVCacheWrapper` — the continuous-batch shape of Ch.05), and **cascade** attention for shared prefixes (`MultiLevelCascadeAttentionWrapper` — Ch.12's prefix reuse, done inside the kernel), all CUDA-graph-compatible (Ch.02). Both engines carry it as a selectable backend (`vllm/v1/attention/backends/flashinfer.py`; SGLang `layers/attention/flashinfer_backend.py`), which is why "FlashInfer" appears as a backend choice next to FlashAttention.
+
 ### Two engines, one kernel family
 
 Verified in both. **Agreement (load-bearing):** neither engine writes attention's tiling in Python; both dispatch to a **FlashAttention-family** *compiled* kernel — and by default each engine's *own* build (vLLM's `vllm_flash_attn`, SGLang's `sgl_kernel`), with the third-party `flash-attn` package only as a fallback — feeding it the paged block/page table. vLLM imports `flash_attn_varlen_func` via `fa_utils` and passes `block_table` (`flash_attn.py` L37/L613); SGLang imports both `flash_attn_varlen_func` and `flash_attn_with_kvcache` from `sgl_kernel.flash_attn` and builds a paged `page_table` for the decode kernel (`flashattention_backend.py` L42–43, `_build_pa_page_table` L95). **Divergence (backend zoo, will rot):** each engine has a pluggable *backend* abstraction selecting among FlashAttention, FlashInfer, Triton, and vendor kernels per hardware and workload, with different defaults and their own hand-written page-table/Triton glue. The kernel *family* is the concept you keep; which specific backend is selected on which GPU is the part that changes release to release.
@@ -111,6 +118,7 @@ Verified in both. **Agreement (load-bearing):** neither engine writes attention'
 - *"Open `references/vllm/vllm/v1/attention/backends/flash_attn.py` and show me where it imports the external kernel and where it passes `block_table` — then find the same two things in `references/sglang/.../flashattention_backend.py`."*
 - *"On my GPU, benchmark the available attention backends (FlashAttention-2/3, FlashInfer, Triton) for a decode-shaped and a prefill-shaped workload. Tell me which wins for each and why."*
 - *"Explain why decode uses `flash_attn_with_kvcache` while prefill uses `flash_attn_varlen_func`, in terms of the one-query-vs-many-query and gather-from-paged-KV shapes."*
+- *"Benchmark FlashInfer vs. FlashAttention on my GPU for a long-context *decode* workload, and show me where FlashDecoding's KV-split (`max_num_splits`) starts to matter — one query over 32k / 128k KV."*
 
 ---
 
